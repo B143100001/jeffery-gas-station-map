@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>全台灣加油站地圖資訊（安全高效重構版）</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <!-- MarkerCluster CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      color: #333;
+    }
+
+    header {
+      background-color: #0b3c5d;
+      color: #fff;
+      padding: 10px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      z-index: 1000;
+    }
+
+    h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    select, input[type="text"] {
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.875rem;
+      outline: none;
+    }
+
+    button {
+      background-color: #d9534f;
+      color: #fff;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 0.875rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover:not(:disabled) {
+      background-color: #c9302c;
+    }
+
+    button:disabled {
+      background-color: #888;
+      cursor: not-allowed;
+    }
+
+    #status {
+      font-size: 0.85rem;
+      color: #ffd166;
+    }
+
+    #map {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Popup 結構樣式 */
+    .station-popup {
+      font-size: 0.875rem;
+      line-height: 1.5;
+    }
+
+    .station-popup h3 {
+      font-size: 1rem;
+      color: #0b3c5d;
+      margin-bottom: 6px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 4px;
+    }
+
+    .tag-brand {
+      display: inline-block;
+      background-color: #e9ecef;
+      color: #495057;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      font-size: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>⛽ 全台灣加油站地圖</h1>
+    <div class="controls">
+      <select id="brandSelect" aria-label="篩選品牌">
+        <option value="ALL">所有品牌</option>
+        <option value="中油">台灣中油 (CPC)</option>
+        <option value="台塑">台塑石油 / 台亞</option>
+        <option value="全國">全國加油站</option>
+        <option value="山隆">山隆加油站</option>
+      </select>
+
+      <input type="text" id="searchInput" placeholder="搜尋站名或地址..." aria-label="搜尋站名或地址">
+      <button id="resetViewBtn" type="button">重設視角</button>
+      <span id="status" role="status">初始化中...</span>
+    </div>
+  </header>
+
+  <main id="map" role="application" aria-label="加油站地圖"></main>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- MarkerCluster JS -->
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const TAIWAN_CENTER = [23.7, 120.9];
+      const INITIAL_ZOOM = 8;
+      const OVERPASS_ENDPOINTS = [
+        'https://overpass-api.de/api/interpreter',
+        'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+      ];
+
+      // 1. 初始化地圖
+      const map = L.map('map', {
+        preferCanvas: true
+      }).setView(TAIWAN_CENTER, INITIAL_ZOOM);
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
+      }).addTo(map);
+
+      const markersCluster = L.markerClusterGroup({
+        chunkedLoading: true,
+        spiderfyOnMaxZoom: true,
+        showCoverageOnHover: false,
+        removeOutsideVisibleBounds: true
+      });
+      map.addLayer(markersCluster);
+
+      // DOM 參照
+      const dom = {
+        brandSelect: document.getElementById('brandSelect'),
+        searchInput: document.getElementById('searchInput'),
+        resetViewBtn: document.getElementById('resetViewBtn'),
+        status: document.getElementById('status')
+      };
+
+      // 內部狀態快取池：每筆站點僅建立一次 Marker 實例
+      let stationPool = [];
+      let abortCtrl = null;
+
+      /**
+       * 防抖函數 (Debounce)
+       */
+      function debounce(fn, delay = 250) {
+        let timer = null;
+        return (...args) => {
+          clearTimeout(timer);
+          timer = setTimeout(() => fn(...args), delay);
+        };
+      }
+
+      /**
+       * 安全生成 Popup DOM 節點，防止 XSS 注入攻擊
+       */
+      function createPopupElement(data) {
+        const container = document.createElement('div');
+        container.className = 'station-popup';
+
+        const title = document.createElement('h3');
+        title.textContent = data.name;
+        container.appendChild(title);
+
+        const brandBadge = document.createElement('div');
+        brandBadge.className = 'tag-brand';
+        brandBadge.textContent =
